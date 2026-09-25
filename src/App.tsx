@@ -6,7 +6,6 @@ import {
   Sun,
   CalendarDays,
   Plus,
-  RotateCcw,
   Sparkles,
   Trash2,
   X,
@@ -14,7 +13,6 @@ import {
   Inbox,
   CheckCheck,
   Database,
-  Clock,
   Tag,
   Pencil,
 } from 'lucide-react';
@@ -426,37 +424,6 @@ export default function App() {
     );
   };
 
-  // シミュレーション: 翌朝リセット (Dailyのみ未完了に戻す)
-  const handleSimulateDailyReset = () => {
-    const updated = tasks.map((t) => {
-      if (t.span === 'daily') {
-        return { ...t, isCompleted: false, completedAt: null };
-      }
-      return t;
-    });
-    syncTasks(updated);
-  };
-
-  // シミュレーション: 月曜朝の週次リセット (Daily + Weeklyの全タスクを未完了に戻す)
-  const handleSimulateWeeklyReset = () => {
-    const updated = tasks.map((t) => {
-      if (t.span === 'daily' || t.span === 'weekly') {
-        return { ...t, isCompleted: false, completedAt: null };
-      }
-      return t;
-    });
-    syncTasks(updated);
-  };
-
-  // シミュレーション: 毎月1日リセット (全タスクを未完了に戻す)
-  const handleSimulateMonthlyReset = () => {
-    const updated = tasks.map((t) => ({
-      ...t,
-      isCompleted: false,
-      completedAt: null,
-    }));
-    syncTasks(updated);
-  };
 
   // Drag & Drop ハンドラ
   const handleDragStart = (id: string) => {
@@ -570,35 +537,11 @@ export default function App() {
             </div>
           </div>
 
-          {/* シミュレーションボタン群 */}
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={handleSimulateDailyReset}
-              title="Dailyタスクのみリセット"
-              className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-[#586e75] bg-[#eee8d5] hover:bg-[#e4dcbf] rounded-lg border border-[#dcd3bc] shadow-2xs transition"
-            >
-              <RotateCcw className="w-3 h-3" />
-              <span>翌朝リセット</span>
-            </button>
-            <button
-              onClick={handleSimulateWeeklyReset}
-              title="日曜が終わり月曜を迎えた時のリセット（Weekly＋Daily）"
-              className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-[#cb4b16] bg-[#cb4b16]/10 hover:bg-[#cb4b16]/20 rounded-lg border border-[#cb4b16]/30 shadow-2xs transition"
-            >
-              <Clock className="w-3 h-3" />
-              <span>月曜週次リセット</span>
-            </button>
-            <button
-              onClick={handleSimulateMonthlyReset}
-              title="月末が終わり翌月1日を迎えた時のリセット（全タスク）"
-              className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-[#d33682] bg-[#d33682]/10 hover:bg-[#d33682]/20 rounded-lg border border-[#d33682]/30 shadow-2xs transition"
-            >
-              <CalendarDays className="w-3 h-3" />
-              <span>翌月1日リセット</span>
-            </button>
+          {/* アクションボタン */}
+          <div>
             <button
               onClick={openAddModal}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#268bd2] hover:bg-[#1f78b8] active:scale-95 rounded-lg shadow-xs transition ml-1"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-[#268bd2] hover:bg-[#1f78b8] active:scale-95 rounded-lg shadow-xs transition"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>タスク追加</span>
