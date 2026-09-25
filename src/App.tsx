@@ -18,9 +18,9 @@ import {
   Tag,
   Pencil,
 } from 'lucide-react';
-import { RoutineTask, TaskSpan } from './types';
+import { RoutineTask, TaskSpan, AppSettings } from './types';
 import { db, initializeDatabase, persistDatabase, DatabaseSchema } from './services/db';
-import { evaluateTaskResets } from './services/resetLogic';
+import { evaluateTaskResets, getLogicalDate } from './services/resetLogic';
 
 const DAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'] as const;
 // 月曜スタート (1: 月, 2: 火, 3: 水, 4: 木, 5: 金, 6: 土, 0: 日)
@@ -155,6 +155,7 @@ export const getMonthlyStatus = (monthlyDay: number | undefined, currentDay: num
 
 export default function App() {
   const [tasks, setTasks] = useState<RoutineTask[]>([]);
+  const [settings, setSettings] = useState<AppSettings>({ dayResetHour: 4 });
   const [isLoaded, setIsLoaded] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
@@ -195,6 +196,9 @@ export default function App() {
   // Lowdb 初期化 ＆ ウィンドウフォーカス時の自動リセット監視
   useEffect(() => {
     initializeDatabase().then((data) => {
+      if (data.settings) {
+        setSettings(data.settings);
+      }
       checkResets(data);
       setIsLoaded(true);
     });
@@ -211,11 +215,14 @@ export default function App() {
     };
   }, []);
 
-  // 今日の日付 & 曜日 (0: 日, 1: 月, ..., 6: 土)
-  const today = new Date();
-  const currentDayOfWeek = today.getDay();
-  const currentDayOfMonth = today.getDate();
-  const dateStr = today.toLocaleDateString('ja-JP', {
+  // 論理日付 & 曜日 (設定のリセット時刻を考慮: 例 深夜4:00までは前日夜扱い)
+  const logicalDate = useMemo(() => {
+    return getLogicalDate(new Date(), settings.dayResetHour);
+  }, [settings.dayResetHour]);
+
+  const currentDayOfWeek = logicalDate.getDay();
+  const currentDayOfMonth = logicalDate.getDate();
+  const dateStr = logicalDate.toLocaleDateString('ja-JP', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -260,9 +267,27 @@ export default function App() {
     [tasks]
   );
 
-  const totalTasks = tasks.length;
-  const doneCount = completedTasks.length;
-  const progressPercent = totalTasks > 0 ? Math.round((doneCount / totalTasks) * 100) : 0;
+  // 本日のノルマ対象タスク（Daily ＋ 今日の曜日に該当する曜日指定タスク）
+  const todayTasks = useMemo(
+    () =>
+      tasks.filter((t) => {
+        if (t.span === 'daily') return true;
+        if (
+          t.span === 'weekly' &&
+          t.weeklyType === 'day_of_week' &&
+          t.daysOfWeek?.includes(currentDayOfWeek)
+        ) {
+          return true;
+        }
+        return false;
+      }),
+    [tasks, currentDayOfWeek]
+  );
+
+  const todayTotal = todayTasks.length;
+  const todayDone = todayTasks.filter((t) => t.isCompleted).length;
+  const progressPercent = todayTotal > 0 ? Math.round((todayDone / todayTotal) * 100) : 100;
+  const isTodayAllDone = todayTotal > 0 && todayDone === todayTotal;
 
   // タスク更新＆Lowdbへの自動永続化
   const syncTasks = async (nextTasks: RoutineTask[]) => {
@@ -512,17 +537,34 @@ export default function App() {
         <div className="flex items-center gap-5">
           <div className="flex items-center gap-3 bg-[#eee8d5]/80 px-3.5 py-1.5 rounded-xl border border-[#dcd3bc]">
             <div className="text-right">
-              <div className="text-[11px] font-medium text-[#839496]">進捗状況</div>
+              <div className="text-[11px] font-medium text-[#839496] flex items-center justify-end gap-1">
+                <span>本日のノルマ</span>
+                {isTodayAllDone && (
+                  <span className="text-[10px] text-[#859900] font-bold">達成！</span>
+                )}
+              </div>
               <div className="text-xs font-bold text-[#268bd2]">
-                {doneCount} / {totalTasks}{' '}
+                {todayDone} / {todayTotal}{' '}
                 <span className="text-[11px] font-normal text-[#657b83]">
                   ({progressPercent}%)
                 </span>
+                {completedTasks.length > todayDone && (
+                  <span
+                    className="text-[10px] text-[#93a1a1] ml-1 font-normal"
+                    title={`いつでもタスク・月次など今日枠外の消化タスクを含む合計: ${completedTasks.length}件完了`}
+                  >
+                    (全完了 {completedTasks.length})
+                  </span>
+                )}
               </div>
             </div>
             <div className="w-24 h-2 bg-[#dfd6be] rounded-full overflow-hidden p-0.5 border border-[#d3c8ab]">
               <div
-                className="h-full bg-gradient-to-r from-[#268bd2] to-[#859900] rounded-full transition-all duration-500 ease-out"
+                className={`h-full rounded-full transition-all duration-500 ease-out ${
+                  isTodayAllDone
+                    ? 'bg-[#859900]'
+                    : 'bg-gradient-to-r from-[#268bd2] to-[#859900]'
+                }`}
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
