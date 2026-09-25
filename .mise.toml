@@ -1,0 +1,5 @@
+[tools]
+node = "24"
+pnpm = "12"
+rust = "latest"
+tauri-cli = "latest"
