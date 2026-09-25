@@ -19,7 +19,8 @@ import {
   Pencil,
 } from 'lucide-react';
 import { RoutineTask, TaskSpan } from './types';
-import { db, initializeDatabase, persistDatabase } from './services/db';
+import { db, initializeDatabase, persistDatabase, DatabaseSchema } from './services/db';
+import { evaluateTaskResets } from './services/resetLogic';
 
 const DAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'] as const;
 // 月曜スタート (1: 月, 2: 火, 3: 水, 4: 木, 5: 金, 6: 土, 0: 日)
@@ -170,12 +171,44 @@ export default function App() {
   const [customTagInput, setCustomTagInput] = useState('');
   const [editingTask, setEditingTask] = useState<RoutineTask | null>(null);
 
-  // Lowdb 初期化
+  // 自動リセット評価（起動時 ＆ ウィンドウフォーカス時）
+  const checkResets = (currentData: DatabaseSchema) => {
+    const result = evaluateTaskResets(
+      currentData.tasks,
+      currentData.settings,
+      currentData.resetState
+    );
+    if (result.hasChanged) {
+      currentData.tasks = result.updatedTasks;
+      currentData.resetState = result.newResetState;
+      persistDatabase();
+      setTasks(result.updatedTasks);
+    } else {
+      if (!currentData.resetState) {
+        currentData.resetState = result.newResetState;
+        persistDatabase();
+      }
+      setTasks(currentData.tasks);
+    }
+  };
+
+  // Lowdb 初期化 ＆ ウィンドウフォーカス時の自動リセット監視
   useEffect(() => {
     initializeDatabase().then((data) => {
-      setTasks(data.tasks);
+      checkResets(data);
       setIsLoaded(true);
     });
+
+    const handleFocus = () => {
+      if (db.data) {
+        checkResets(db.data);
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
   }, []);
 
   // 今日の日付 & 曜日 (0: 日, 1: 月, ..., 6: 土)

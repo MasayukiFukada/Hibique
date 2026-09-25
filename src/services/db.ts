@@ -1,10 +1,12 @@
 import { Low } from 'lowdb';
 import { RoutineTask, AppSettings } from '../types';
 import { initialTasks } from '../mockData';
+import { ResetState, getCurrentResetState } from './resetLogic';
 
 export interface DatabaseSchema {
   tasks: RoutineTask[];
   settings: AppSettings;
+  resetState?: ResetState;
 }
 
 const defaultData: DatabaseSchema = {
@@ -12,6 +14,7 @@ const defaultData: DatabaseSchema = {
   settings: {
     dayResetHour: 4, // 深夜4時リセット
   },
+  resetState: getCurrentResetState(),
 };
 
 // ブラウザ環境用 LocalStorage アダプタ
