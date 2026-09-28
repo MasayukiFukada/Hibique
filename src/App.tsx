@@ -260,6 +260,22 @@ export default function App() {
       ),
     [tasks]
   );
+  // 週間：曜日指定（本日該当分）
+  const uncompletedWeeklyToday = useMemo(
+    () =>
+      uncompletedWeeklyScheduled.filter((t) =>
+        t.daysOfWeek?.includes(currentDayOfWeek)
+      ),
+    [uncompletedWeeklyScheduled, currentDayOfWeek]
+  );
+  // 週間：曜日指定（他曜日・控え分）
+  const uncompletedWeeklyOtherDays = useMemo(
+    () =>
+      uncompletedWeeklyScheduled.filter(
+        (t) => !t.daysOfWeek?.includes(currentDayOfWeek)
+      ),
+    [uncompletedWeeklyScheduled, currentDayOfWeek]
+  );
   const uncompletedMonthly = useMemo(
     () => tasks.filter((t) => !t.isCompleted && t.span === 'monthly'),
     [tasks]
@@ -652,34 +668,74 @@ export default function App() {
               </div>
 
               {/* サブグループ B: 曜日ルーティーン (Day-of-Week) */}
-              <div>
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#586e75] mb-1.5 px-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#6c71c4]" />
-                  <span>曜日ルーティーン (各曜日に消化)</span>
-                  <span className="text-[#839496] font-normal ml-auto">
-                    {uncompletedWeeklyScheduled.length} 件
-                  </span>
-                </div>
-                <div className="space-y-1.5">
-                  {uncompletedWeeklyScheduled.length === 0 ? (
+              <div className="space-y-3">
+                {/* 1. 今日の曜日ルーティーン */}
+                {uncompletedWeeklyToday.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#268bd2] mb-1.5 px-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#268bd2] animate-pulse" />
+                      <span>本日の曜日ルーティーン ({DAY_LABELS[currentDayOfWeek]}曜)</span>
+                      <span className="text-[#839496] font-normal ml-auto">
+                        {uncompletedWeeklyToday.length} 件
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {uncompletedWeeklyToday.map((task) => (
+                        <TaskCard
+                          key={task.id}
+                          task={task}
+                          currentDayOfWeek={currentDayOfWeek}
+                          currentDayOfMonth={currentDayOfMonth}
+                          onToggle={() => toggleTask(task.id)}
+                          onEdit={(e) => openEditModal(task, e)}
+                          onDelete={(e) => deleteTask(task.id, e)}
+                          onDragStart={() => handleDragStart(task.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 2. 他曜日のルーティーン（今週の控え） */}
+                {uncompletedWeeklyOtherDays.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#839496] mb-1.5 px-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#93a1a1]" />
+                      <span>他曜日のルーティーン (今週の控え)</span>
+                      <span className="text-[10px] text-[#93a1a1] ml-1 font-normal">※前倒し消化も可能</span>
+                      <span className="text-[#93a1a1] font-normal ml-auto">
+                        {uncompletedWeeklyOtherDays.length} 件
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {uncompletedWeeklyOtherDays.map((task) => (
+                        <TaskCard
+                          key={task.id}
+                          task={task}
+                          currentDayOfWeek={currentDayOfWeek}
+                          currentDayOfMonth={currentDayOfMonth}
+                          onToggle={() => toggleTask(task.id)}
+                          onEdit={(e) => openEditModal(task, e)}
+                          onDelete={(e) => deleteTask(task.id, e)}
+                          onDragStart={() => handleDragStart(task.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* どちらも0件の場合 */}
+                {uncompletedWeeklyToday.length === 0 && uncompletedWeeklyOtherDays.length === 0 && (
+                  <div>
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#586e75] mb-1.5 px-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#6c71c4]" />
+                      <span>曜日ルーティーン (各曜日に消化)</span>
+                    </div>
                     <div className="p-2.5 rounded-xl border border-dashed border-[#dcd3bc] text-center text-[11px] text-[#839496]">
                       曜日指定タスクはありません
                     </div>
-                  ) : (
-                    uncompletedWeeklyScheduled.map((task) => (
-                      <TaskCard
-                        key={task.id}
-                        task={task}
-                        currentDayOfWeek={currentDayOfWeek}
-                        currentDayOfMonth={currentDayOfMonth}
-                        onToggle={() => toggleTask(task.id)}
-                        onEdit={(e) => openEditModal(task, e)}
-                        onDelete={(e) => deleteTask(task.id, e)}
-                        onDragStart={() => handleDragStart(task.id)}
-                      />
-                    ))
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1007,15 +1063,26 @@ function TaskCard({
 }) {
   const isWeeklyScheduled = task.span === 'weekly' && task.weeklyType === 'day_of_week';
   const isTodayWeeklyTask = isWeeklyScheduled && task.daysOfWeek?.includes(currentDayOfWeek);
+  const isOtherDayWeeklyTask = isWeeklyScheduled && !task.daysOfWeek?.includes(currentDayOfWeek);
   const monthlyStatus =
     task.span === 'monthly' ? getMonthlyStatus(task.monthlyDay, currentDayOfMonth) : null;
 
   // カードのボーダーと背景の動的スタイル
-  let cardBorderClass = 'border-[#e6deca] hover:border-[#d3c8ab] bg-[#fffdf7] hover:bg-white';
+  let cardBorderClass = 'border-[#e6deca] hover:border-[#d3c8ab] bg-[#fffdf7] hover:bg-white shadow-2xs';
   if (isTodayWeeklyTask) {
     cardBorderClass = 'border-[#268bd2] ring-1 ring-[#268bd2]/30 shadow-xs bg-[#fffdf7] hover:bg-white';
+  } else if (isOtherDayWeeklyTask) {
+    cardBorderClass = 'border-dashed border-[#dcd3bc] bg-[#fbf5e6]/50 hover:bg-[#fffdf7] hover:border-[#b4bdbe] opacity-75 hover:opacity-100 shadow-none';
   } else if (monthlyStatus) {
-    cardBorderClass = `${monthlyStatus.borderClass} hover:brightness-98`;
+    cardBorderClass = `${monthlyStatus.borderClass} hover:brightness-98 shadow-2xs`;
+  }
+
+  // タイトル文字色
+  let titleColorClass = 'text-[#073642] group-hover:text-[#002b36]';
+  if (isOtherDayWeeklyTask) {
+    titleColorClass = 'text-[#657b83] font-medium group-hover:text-[#073642]';
+  } else if (monthlyStatus) {
+    titleColorClass = monthlyStatus.textClass;
   }
 
   return (
@@ -1023,7 +1090,7 @@ function TaskCard({
       draggable
       onDragStart={onDragStart}
       onClick={onToggle}
-      className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer active:scale-[0.99] transition duration-150 shadow-2xs border ${cardBorderClass}`}
+      className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer active:scale-[0.99] transition duration-150 border ${cardBorderClass}`}
     >
       <div className="flex items-center gap-3">
         <button
@@ -1032,20 +1099,27 @@ function TaskCard({
             e.stopPropagation();
             onToggle();
           }}
-          className="text-[#93a1a1] hover:text-[#268bd2] transition"
+          className={`${
+            isOtherDayWeeklyTask
+              ? 'text-[#b4bdbe] group-hover:text-[#93a1a1] hover:!text-[#268bd2]'
+              : 'text-[#93a1a1] hover:text-[#268bd2]'
+          } transition`}
         >
           <Circle className="w-4 h-4 stroke-[2]" />
         </button>
         <div>
           <div className="flex items-center gap-2">
-            <span className={`text-sm font-semibold transition ${
-              monthlyStatus ? monthlyStatus.textClass : 'text-[#073642] group-hover:text-[#002b36]'
-            }`}>
+            <span className={`text-sm font-semibold transition ${titleColorClass}`}>
               {task.title}
             </span>
             {isTodayWeeklyTask && (
               <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-[#268bd2]/15 text-[#268bd2] border border-[#268bd2]/30 font-bold tracking-wide">
                 本日
+              </span>
+            )}
+            {isOtherDayWeeklyTask && (
+              <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-[#eee8d5] text-[#839496] border border-[#dcd3bc] font-normal">
+                他曜日
               </span>
             )}
             {monthlyStatus && (
@@ -1061,9 +1135,9 @@ function TaskCard({
               task.tags.map((tag) => (
                 <span
                   key={tag}
-                  className={`text-[10px] px-1.5 py-0.2 rounded-md border font-medium ${getTagBadgeClass(
-                    tag
-                  )}`}
+                  className={`text-[10px] px-1.5 py-0.2 rounded-md border font-medium ${
+                    isOtherDayWeeklyTask ? 'opacity-80' : ''
+                  } ${getTagBadgeClass(tag)}`}
                 >
                   #{tag}
                 </span>
@@ -1082,7 +1156,7 @@ function TaskCard({
                       key={d}
                       className={`text-[10px] px-1.5 py-0.2 rounded font-bold border ${
                         isToday ? colorDef.activeBadge : colorDef.badge
-                      }`}
+                      } ${isOtherDayWeeklyTask ? 'opacity-85' : ''}`}
                     >
                       {DAY_LABELS[d]}
                     </span>
@@ -1103,7 +1177,7 @@ function TaskCard({
 
       <div className="flex items-center gap-1.5">
         <span className="opacity-0 group-hover:opacity-100 text-xs text-[#268bd2] font-medium flex items-center gap-0.5 transition">
-          <span>完了へ</span>
+          <span>{isOtherDayWeeklyTask ? '前倒し完了へ' : '完了へ'}</span>
           <ChevronRight className="w-3.5 h-3.5" />
         </span>
         <button
