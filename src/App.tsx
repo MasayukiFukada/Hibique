@@ -232,9 +232,29 @@ export default function App() {
     () => tasks.filter((t) => t.isCompleted),
     [tasks]
   );
-  const uncompletedDaily = useMemo(
-    () => tasks.filter((t) => !t.isCompleted && t.span === 'daily'),
-    [tasks]
+  // Daily：本日該当分（daysOfWeek未指定・全曜日、または本日曜日を含む）
+  const uncompletedDailyToday = useMemo(
+    () =>
+      tasks.filter(
+        (t) =>
+          !t.isCompleted &&
+          t.span === 'daily' &&
+          (!t.daysOfWeek || t.daysOfWeek.length === 0 || t.daysOfWeek.includes(currentDayOfWeek))
+      ),
+    [tasks, currentDayOfWeek]
+  );
+  // Daily：他曜日控え分（daysOfWeekが指定されており、本日曜日を含まない）
+  const uncompletedDailyOtherDays = useMemo(
+    () =>
+      tasks.filter(
+        (t) =>
+          !t.isCompleted &&
+          t.span === 'daily' &&
+          t.daysOfWeek &&
+          t.daysOfWeek.length > 0 &&
+          !t.daysOfWeek.includes(currentDayOfWeek)
+      ),
+    [tasks, currentDayOfWeek]
   );
   // 週間：いつでも
   const uncompletedWeeklyAnytime = useMemo(
@@ -281,11 +301,17 @@ export default function App() {
     [tasks]
   );
 
-  // 本日のノルマ対象タスク（Daily ＋ 今日の曜日に該当する曜日指定タスク）
+  // 本日のノルマ対象タスク（本日該当のDaily ＋ 今日の曜日に該当する曜日指定Weeklyタスク）
   const todayTasks = useMemo(
     () =>
       tasks.filter((t) => {
-        if (t.span === 'daily') return true;
+        if (t.span === 'daily') {
+          return (
+            !t.daysOfWeek ||
+            t.daysOfWeek.length === 0 ||
+            t.daysOfWeek.includes(currentDayOfWeek)
+          );
+        }
         if (
           t.span === 'weekly' &&
           t.weeklyType === 'day_of_week' &&
@@ -341,7 +367,7 @@ export default function App() {
     setNewTitle('');
     setNewSpan('daily');
     setNewWeeklyType('anytime');
-    setNewSelectedDays([1]);
+    setNewSelectedDays([1, 2, 3, 4, 5, 6, 0]); // デフォルト全曜日
     setNewMonthlyDay('');
     setNewTags([]);
     setCustomTagInput('');
@@ -356,7 +382,11 @@ export default function App() {
     setNewSpan(task.span);
     setNewWeeklyType(task.weeklyType || 'anytime');
     setNewSelectedDays(
-      task.daysOfWeek && task.daysOfWeek.length > 0 ? [...task.daysOfWeek] : [1]
+      task.daysOfWeek && task.daysOfWeek.length > 0
+        ? [...task.daysOfWeek]
+        : task.span === 'daily'
+        ? [1, 2, 3, 4, 5, 6, 0]
+        : [1]
     );
     setNewMonthlyDay(task.monthlyDay ? String(task.monthlyDay) : '');
     setNewTags(task.tags ? [...task.tags] : []);
@@ -380,6 +410,15 @@ export default function App() {
         ? Math.min(31, Math.max(1, parseInt(newMonthlyDay.trim(), 10)))
         : undefined;
 
+    const parsedDaysOfWeek =
+      newSpan === 'daily'
+        ? newSelectedDays.length === 7 || newSelectedDays.length === 0
+          ? undefined
+          : [...newSelectedDays].sort()
+        : newSpan === 'weekly' && newWeeklyType === 'day_of_week'
+        ? [...newSelectedDays].sort()
+        : undefined;
+
     if (editingTask) {
       // 既存タスクの更新
       const updated = tasks.map((t) => {
@@ -389,10 +428,7 @@ export default function App() {
             title: newTitle.trim(),
             span: newSpan,
             weeklyType: newSpan === 'weekly' ? newWeeklyType : undefined,
-            daysOfWeek:
-              newSpan === 'weekly' && newWeeklyType === 'day_of_week'
-                ? newSelectedDays.sort()
-                : undefined,
+            daysOfWeek: parsedDaysOfWeek,
             monthlyDay: parsedMonthlyDay,
             tags: finalTags.length > 0 ? finalTags : undefined,
           };
@@ -407,10 +443,7 @@ export default function App() {
         title: newTitle.trim(),
         span: newSpan,
         weeklyType: newSpan === 'weekly' ? newWeeklyType : undefined,
-        daysOfWeek:
-          newSpan === 'weekly' && newWeeklyType === 'day_of_week'
-            ? newSelectedDays.sort()
-            : undefined,
+        daysOfWeek: parsedDaysOfWeek,
         monthlyDay: parsedMonthlyDay,
         tags: finalTags.length > 0 ? finalTags : undefined,
         isCompleted: false,
@@ -590,27 +623,27 @@ export default function App() {
               </h2>
             </div>
             <span className="text-xs text-[#586e75] bg-[#eee8d5] px-2 py-0.5 rounded-full border border-[#dcd3bc] font-medium">
-              残り {uncompletedDaily.length + uncompletedWeeklyAnytime.length + uncompletedWeeklyScheduled.length + uncompletedMonthly.length} 件
+              残り {uncompletedDailyToday.length + uncompletedDailyOtherDays.length + uncompletedWeeklyAnytime.length + uncompletedWeeklyScheduled.length + uncompletedMonthly.length} 件
             </span>
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {/* ── 1. Daily (毎日) ── */}
+            {/* ── 1. Daily (毎日・定期ルーティーン) ── */}
             <div>
               <div className="flex items-center gap-2 text-xs font-bold text-[#b58900] mb-2 px-1 tracking-wider uppercase">
                 <Sun className="w-3.5 h-3.5" />
                 <span>今日のルーティーン (Daily)</span>
                 <span className="text-[#839496] font-normal ml-auto">
-                  {uncompletedDaily.length} 件
+                  {uncompletedDailyToday.length} 件
                 </span>
               </div>
               <div className="space-y-1.5">
-                {uncompletedDaily.length === 0 ? (
+                {uncompletedDailyToday.length === 0 ? (
                   <div className="p-3 rounded-xl border border-dashed border-[#dcd3bc] text-center text-xs text-[#839496]">
                     今日のルーティーンはすべて完了！ 🎉
                   </div>
                 ) : (
-                  uncompletedDaily.map((task) => (
+                  uncompletedDailyToday.map((task) => (
                     <TaskCard
                       key={task.id}
                       task={task}
@@ -624,6 +657,34 @@ export default function App() {
                   ))
                 )}
               </div>
+
+              {/* 他曜日のデイリー（本日はお休み / 控え） */}
+              {uncompletedDailyOtherDays.length > 0 && (
+                <div className="mt-2.5 pt-2 border-t border-[#e6deca]/60">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#839496] mb-1.5 px-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#93a1a1]" />
+                    <span>他曜日のデイリー (本日はお休み / 控え)</span>
+                    <span className="text-[10px] text-[#93a1a1] ml-1 font-normal">※前倒し消化も可能</span>
+                    <span className="text-[#93a1a1] font-normal ml-auto">
+                      {uncompletedDailyOtherDays.length} 件
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {uncompletedDailyOtherDays.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        currentDayOfWeek={currentDayOfWeek}
+                        currentDayOfMonth={currentDayOfMonth}
+                        onToggle={() => toggleTask(task.id)}
+                        onEdit={(e) => openEditModal(task, e)}
+                        onDelete={(e) => deleteTask(task.id, e)}
+                        onDragStart={() => handleDragStart(task.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* ── 2. Weekly (今週のタスク) ── */}
@@ -929,6 +990,81 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Daily選択時：実行曜日セレクタ */}
+              {newSpan === 'daily' && (
+                <div className="p-3.5 rounded-xl bg-[#fbf5e6] border border-[#e6deca] space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-[#586e75]">
+                      実行曜日
+                    </label>
+                    {/* クイック選択プリセット */}
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setNewSelectedDays([1, 2, 3, 4, 5, 6, 0])}
+                        className={`px-2 py-0.5 text-[10px] rounded-md border font-medium transition ${
+                          newSelectedDays.length === 7
+                            ? 'bg-[#268bd2] text-white border-[#268bd2] font-bold'
+                            : 'bg-[#eee8d5] text-[#657b83] border-[#dcd3bc] hover:bg-[#e4dcbf]'
+                        }`}
+                      >
+                        毎日
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNewSelectedDays([1, 2, 3, 4, 5])}
+                        className={`px-2 py-0.5 text-[10px] rounded-md border font-medium transition ${
+                          newSelectedDays.length === 5 &&
+                          [1, 2, 3, 4, 5].every((d) => newSelectedDays.includes(d))
+                            ? 'bg-[#268bd2] text-white border-[#268bd2] font-bold'
+                            : 'bg-[#eee8d5] text-[#657b83] border-[#dcd3bc] hover:bg-[#e4dcbf]'
+                        }`}
+                      >
+                        平日 (月〜金)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNewSelectedDays([6, 0])}
+                        className={`px-2 py-0.5 text-[10px] rounded-md border font-medium transition ${
+                          newSelectedDays.length === 2 &&
+                          [6, 0].every((d) => newSelectedDays.includes(d))
+                            ? 'bg-[#268bd2] text-white border-[#268bd2] font-bold'
+                            : 'bg-[#eee8d5] text-[#657b83] border-[#dcd3bc] hover:bg-[#e4dcbf]'
+                        }`}
+                      >
+                        週末 (土日)
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-7 gap-1">
+                    {ORDERED_DAYS.map((d) => {
+                      const isSelected = newSelectedDays.includes(d);
+                      const colorDef = DAY_COLORS[d];
+                      return (
+                        <button
+                          type="button"
+                          key={d}
+                          onClick={() => toggleDaySelection(d)}
+                          className={`py-1.5 text-xs font-bold rounded-lg border transition ${
+                            isSelected
+                              ? colorDef.buttonBg + ' shadow-xs'
+                              : 'bg-[#eee8d5] text-[#839496] border-[#dcd3bc] hover:bg-[#e4dcbf]'
+                          }`}
+                        >
+                          {DAY_LABELS[d]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] text-[#839496]">
+                    {newSelectedDays.length === 7
+                      ? '※毎日深夜4:00に未完了へ自動リセットされます'
+                      : '※指定曜日の深夜4:00に自動リセットされ、対象外の曜日は今日のノルマに含まれません'}
+                  </p>
+                </div>
+              )}
+
               {/* Weekly選択時のみ：週間タイプ選択（いつでも vs 曜日指定） */}
               {newSpan === 'weekly' && (
                 <div className="p-3.5 rounded-xl bg-[#fbf5e6] border border-[#e6deca] space-y-3">
@@ -1062,16 +1198,20 @@ function TaskCard({
   onDragStart: () => void;
 }) {
   const isWeeklyScheduled = task.span === 'weekly' && task.weeklyType === 'day_of_week';
-  const isTodayWeeklyTask = isWeeklyScheduled && task.daysOfWeek?.includes(currentDayOfWeek);
-  const isOtherDayWeeklyTask = isWeeklyScheduled && !task.daysOfWeek?.includes(currentDayOfWeek);
+  const isDailyScheduled =
+    task.span === 'daily' &&
+    Boolean(task.daysOfWeek && task.daysOfWeek.length > 0 && task.daysOfWeek.length < 7);
+  const isScheduled = isWeeklyScheduled || isDailyScheduled;
+  const isTodayScheduledTask = isScheduled && task.daysOfWeek?.includes(currentDayOfWeek);
+  const isOtherDayScheduledTask = isScheduled && !task.daysOfWeek?.includes(currentDayOfWeek);
   const monthlyStatus =
     task.span === 'monthly' ? getMonthlyStatus(task.monthlyDay, currentDayOfMonth) : null;
 
   // カードのボーダーと背景の動的スタイル
   let cardBorderClass = 'border-[#e6deca] hover:border-[#d3c8ab] bg-[#fffdf7] hover:bg-white shadow-2xs';
-  if (isTodayWeeklyTask) {
+  if (isTodayScheduledTask) {
     cardBorderClass = 'border-[#268bd2] ring-1 ring-[#268bd2]/30 shadow-xs bg-[#fffdf7] hover:bg-white';
-  } else if (isOtherDayWeeklyTask) {
+  } else if (isOtherDayScheduledTask) {
     cardBorderClass = 'border-dashed border-[#dcd3bc] bg-[#fbf5e6]/50 hover:bg-[#fffdf7] hover:border-[#b4bdbe] opacity-75 hover:opacity-100 shadow-none';
   } else if (monthlyStatus) {
     cardBorderClass = `${monthlyStatus.borderClass} hover:brightness-98 shadow-2xs`;
@@ -1079,7 +1219,7 @@ function TaskCard({
 
   // タイトル文字色
   let titleColorClass = 'text-[#073642] group-hover:text-[#002b36]';
-  if (isOtherDayWeeklyTask) {
+  if (isOtherDayScheduledTask) {
     titleColorClass = 'text-[#657b83] font-medium group-hover:text-[#073642]';
   } else if (monthlyStatus) {
     titleColorClass = monthlyStatus.textClass;
@@ -1100,7 +1240,7 @@ function TaskCard({
             onToggle();
           }}
           className={`${
-            isOtherDayWeeklyTask
+            isOtherDayScheduledTask
               ? 'text-[#b4bdbe] group-hover:text-[#93a1a1] hover:!text-[#268bd2]'
               : 'text-[#93a1a1] hover:text-[#268bd2]'
           } transition`}
@@ -1112,12 +1252,12 @@ function TaskCard({
             <span className={`text-sm font-semibold transition ${titleColorClass}`}>
               {task.title}
             </span>
-            {isTodayWeeklyTask && (
+            {isTodayScheduledTask && (
               <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-[#268bd2]/15 text-[#268bd2] border border-[#268bd2]/30 font-bold tracking-wide">
                 本日
               </span>
             )}
-            {isOtherDayWeeklyTask && (
+            {isOtherDayScheduledTask && (
               <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-[#eee8d5] text-[#839496] border border-[#dcd3bc] font-normal">
                 他曜日
               </span>
@@ -1136,7 +1276,7 @@ function TaskCard({
                 <span
                   key={tag}
                   className={`text-[10px] px-1.5 py-0.2 rounded-md border font-medium ${
-                    isOtherDayWeeklyTask ? 'opacity-80' : ''
+                    isOtherDayScheduledTask ? 'opacity-80' : ''
                   } ${getTagBadgeClass(tag)}`}
                 >
                   #{tag}
@@ -1144,7 +1284,7 @@ function TaskCard({
               ))}
 
             {/* 曜日指定タスクの場合の7色カラフル曜日バッジ */}
-            {isWeeklyScheduled && task.daysOfWeek && task.daysOfWeek.length > 0 && (
+            {isScheduled && task.daysOfWeek && task.daysOfWeek.length > 0 && (
               <div className="flex items-center gap-1">
                 {ORDERED_DAYS.map((d) => {
                   const isTarget = task.daysOfWeek?.includes(d);
@@ -1156,7 +1296,7 @@ function TaskCard({
                       key={d}
                       className={`text-[10px] px-1.5 py-0.2 rounded font-bold border ${
                         isToday ? colorDef.activeBadge : colorDef.badge
-                      } ${isOtherDayWeeklyTask ? 'opacity-85' : ''}`}
+                      } ${isOtherDayScheduledTask ? 'opacity-85' : ''}`}
                     >
                       {DAY_LABELS[d]}
                     </span>
@@ -1177,7 +1317,7 @@ function TaskCard({
 
       <div className="flex items-center gap-1.5">
         <span className="opacity-0 group-hover:opacity-100 text-xs text-[#268bd2] font-medium flex items-center gap-0.5 transition">
-          <span>{isOtherDayWeeklyTask ? '前倒し完了へ' : '完了へ'}</span>
+          <span>{isOtherDayScheduledTask ? '前倒し完了へ' : '完了へ'}</span>
           <ChevronRight className="w-3.5 h-3.5" />
         </span>
         <button
@@ -1241,7 +1381,8 @@ function DoneTaskCard({
           </span>
           <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
             {/* 曜日またはスパンバッジ */}
-            {task.span === 'weekly' && task.weeklyType === 'day_of_week' && task.daysOfWeek ? (
+            {(task.span === 'weekly' && task.weeklyType === 'day_of_week' && task.daysOfWeek) ||
+            (task.span === 'daily' && task.daysOfWeek && task.daysOfWeek.length > 0 && task.daysOfWeek.length < 7) ? (
               <div className="flex items-center gap-1">
                 {ORDERED_DAYS.map((d) => {
                   if (!task.daysOfWeek?.includes(d)) return null;
