@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev; stty sane 2>/dev/null"
+    "tauri:dev": "tauri dev; stty sane < /dev/tty 2>/dev/null; tput cnorm 2>/dev/null || true"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
