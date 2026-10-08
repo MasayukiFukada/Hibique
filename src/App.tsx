@@ -19,6 +19,8 @@ import {
 import { RoutineTask, TaskSpan, AppSettings } from './types';
 import { db, initializeDatabase, persistDatabase, DatabaseSchema } from './services/db';
 import { evaluateTaskResets, getLogicalDate } from './services/resetLogic';
+import { ProgressIndicator } from './components/ProgressIndicator';
+import { TodayCompletionCard } from './components/TodayCompletionCard';
 
 const DAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'] as const;
 // 月曜スタート (1: 月, 2: 火, 3: 水, 4: 木, 5: 金, 6: 土, 0: 日)
@@ -551,40 +553,13 @@ export default function App() {
 
         {/* 進捗プログレス ＆ アクション */}
         <div className="flex items-center gap-5">
-          <div className="flex items-center gap-3 bg-[#eee8d5]/80 px-3.5 py-1.5 rounded-xl border border-[#dcd3bc]">
-            <div className="text-right">
-              <div className="text-[11px] font-medium text-[#839496] flex items-center justify-end gap-1">
-                <span>本日のノルマ</span>
-                {isTodayAllDone && (
-                  <span className="text-[10px] text-[#859900] font-bold">達成！</span>
-                )}
-              </div>
-              <div className="text-xs font-bold text-[#268bd2]">
-                {todayDone} / {todayTotal}{' '}
-                <span className="text-[11px] font-normal text-[#657b83]">
-                  ({progressPercent}%)
-                </span>
-                {completedTasks.length > todayDone && (
-                  <span
-                    className="text-[10px] text-[#93a1a1] ml-1 font-normal"
-                    title={`いつでもタスク・月次など今日枠外の消化タスクを含む合計: ${completedTasks.length}件完了`}
-                  >
-                    (全完了 {completedTasks.length})
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="w-24 h-2 bg-[#dfd6be] rounded-full overflow-hidden p-0.5 border border-[#d3c8ab]">
-              <div
-                className={`h-full rounded-full transition-all duration-500 ease-out ${
-                  isTodayAllDone
-                    ? 'bg-[#859900]'
-                    : 'bg-gradient-to-r from-[#268bd2] to-[#859900]'
-                }`}
-                style={{ width: `${progressPercent}%` }}
-              />
-            </div>
-          </div>
+          <ProgressIndicator
+            todayDone={todayDone}
+            todayTotal={todayTotal}
+            progressPercent={progressPercent}
+            isTodayAllDone={isTodayAllDone}
+            totalCompletedCount={completedTasks.length}
+          />
 
           {/* アクションボタン */}
           <div>
@@ -639,9 +614,18 @@ export default function App() {
               </div>
               <div className="space-y-1.5">
                 {uncompletedDailyToday.length === 0 ? (
-                  <div className="p-3 rounded-xl border border-dashed border-[#dcd3bc] text-center text-xs text-[#839496]">
-                    今日のルーティーンはすべて完了！ 🎉
-                  </div>
+                  todayTotal > 0 && isTodayAllDone ? (
+                    <TodayCompletionCard todayDone={todayDone} />
+                  ) : todayTotal > 0 && !isTodayAllDone ? (
+                    <div className="p-3.5 rounded-xl border border-dashed border-[#859900]/40 bg-[#859900]/5 text-center text-xs text-[#586e75] flex items-center justify-center gap-2">
+                      <Sparkles className="w-3.5 h-3.5 text-[#859900]" />
+                      <span>今日のDailyルーティーンは完了！ 続いて本日の曜日タスクへどうぞ ✨</span>
+                    </div>
+                  ) : (
+                    <div className="p-3 rounded-xl border border-dashed border-[#dcd3bc] text-center text-xs text-[#839496]">
+                      本日のノルマ対象タスクはありません
+                    </div>
+                  )
                 ) : (
                   uncompletedDailyToday.map((task) => (
                     <TaskCard
