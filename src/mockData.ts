@@ -23,10 +23,21 @@ export const initialTasks: RoutineTask[] = [
     span: 'daily',
     isCompleted: true,
     completedAt: new Date().toISOString(),
+    url: 'https://news.ycombinator.com',
     tags: ['情報収集'],
   },
 
   // ── Weekly: 今週いつでも (Anytime) ──
+  {
+    id: 'task-15',
+    title: '気になるクラファン進捗確認・検討',
+    span: 'weekly',
+    weeklyType: 'anytime',
+    deadline: '2026-11-20',
+    url: 'https://camp-fire.jp',
+    isCompleted: false,
+    tags: ['買い物'],
+  },
   {
     id: 'task-5',
     title: '部屋全体の掃除機がけ',

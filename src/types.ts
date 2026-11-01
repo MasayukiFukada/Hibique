@@ -11,6 +11,8 @@ export interface RoutineTask {
   completedAt?: string | null;
   category?: string;
   tags?: string[];
+  url?: string; // 巡回先URL (任意)
+  deadline?: string; // 終了期日・目標日 (YYYY-MM-DD, 任意)
 }
 
 export interface AppSettings {

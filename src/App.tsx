@@ -15,10 +15,12 @@ import {
   Database,
   Tag,
   Pencil,
+  Link as LinkIcon,
 } from 'lucide-react';
 import { RoutineTask, TaskSpan, AppSettings } from './types';
 import { db, initializeDatabase, persistDatabase, DatabaseSchema } from './services/db';
 import { evaluateTaskResets, getLogicalDate } from './services/resetLogic';
+import { getDeadlineStatus, sanitizeUrl, openExternalUrl } from './services/deadline';
 import { ProgressIndicator } from './components/ProgressIndicator';
 import { TodayCompletionCard } from './components/TodayCompletionCard';
 
@@ -175,6 +177,8 @@ export default function App() {
   const [newMonthlyDay, setNewMonthlyDay] = useState<string>(''); // 月次タスクの目安日
   const [newTags, setNewTags] = useState<string[]>([]);
   const [customTagInput, setCustomTagInput] = useState('');
+  const [newUrl, setNewUrl] = useState('');
+  const [newDeadline, setNewDeadline] = useState('');
   const [editingTask, setEditingTask] = useState<RoutineTask | null>(null);
 
   // 自動リセット評価（起動時 ＆ ウィンドウフォーカス時）
@@ -233,6 +237,12 @@ export default function App() {
     day: '2-digit',
     weekday: 'short',
   });
+  const logicalDateStr = useMemo(() => {
+    const y = logicalDate.getFullYear();
+    const m = String(logicalDate.getMonth() + 1).padStart(2, '0');
+    const d = String(logicalDate.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }, [logicalDate]);
 
   // タスクの分類
   const completedTasks = useMemo(
@@ -413,6 +423,8 @@ export default function App() {
     setNewMonthlyDay('');
     setNewTags([]);
     setCustomTagInput('');
+    setNewUrl('');
+    setNewDeadline('');
     setIsAddModalOpen(true);
   };
 
@@ -433,6 +445,8 @@ export default function App() {
     setNewMonthlyDay(task.monthlyDay ? String(task.monthlyDay) : '');
     setNewTags(task.tags ? [...task.tags] : []);
     setCustomTagInput('');
+    setNewUrl(task.url || '');
+    setNewDeadline(task.deadline || '');
     setIsAddModalOpen(true);
   };
 
@@ -461,6 +475,9 @@ export default function App() {
         ? [...newSelectedDays].sort()
         : undefined;
 
+    const sanitizedUrl = sanitizeUrl(newUrl);
+    const sanitizedDeadline = newDeadline.trim() || undefined;
+
     if (editingTask) {
       // 既存タスクの更新
       const updated = tasks.map((t) => {
@@ -473,6 +490,8 @@ export default function App() {
             daysOfWeek: parsedDaysOfWeek,
             monthlyDay: parsedMonthlyDay,
             tags: finalTags.length > 0 ? finalTags : undefined,
+            url: sanitizedUrl,
+            deadline: sanitizedDeadline,
           };
         }
         return t;
@@ -488,6 +507,8 @@ export default function App() {
         daysOfWeek: parsedDaysOfWeek,
         monthlyDay: parsedMonthlyDay,
         tags: finalTags.length > 0 ? finalTags : undefined,
+        url: sanitizedUrl,
+        deadline: sanitizedDeadline,
         isCompleted: false,
       };
       syncTasks([newTask, ...tasks]);
@@ -673,6 +694,7 @@ export default function App() {
                       task={task}
                       currentDayOfWeek={currentDayOfWeek}
                       currentDayOfMonth={currentDayOfMonth}
+                      logicalDateStr={logicalDateStr}
                       onToggle={() => toggleTask(task.id)}
                       onEdit={(e) => openEditModal(task, e)}
                       onDelete={(e) => deleteTask(task.id, e)}
@@ -700,6 +722,7 @@ export default function App() {
                         task={task}
                         currentDayOfWeek={currentDayOfWeek}
                         currentDayOfMonth={currentDayOfMonth}
+                        logicalDateStr={logicalDateStr}
                         onToggle={() => toggleTask(task.id)}
                         onEdit={(e) => openEditModal(task, e)}
                         onDelete={(e) => deleteTask(task.id, e)}
@@ -734,6 +757,7 @@ export default function App() {
                       task={task}
                       currentDayOfWeek={currentDayOfWeek}
                       currentDayOfMonth={currentDayOfMonth}
+                      logicalDateStr={logicalDateStr}
                       onToggle={() => toggleTask(task.id)}
                       onEdit={(e) => openEditModal(task, e)}
                       onDelete={(e) => deleteTask(task.id, e)}
@@ -761,6 +785,7 @@ export default function App() {
                         task={task}
                         currentDayOfWeek={currentDayOfWeek}
                         currentDayOfMonth={currentDayOfMonth}
+                        logicalDateStr={logicalDateStr}
                         onToggle={() => toggleTask(task.id)}
                         onEdit={(e) => openEditModal(task, e)}
                         onDelete={(e) => deleteTask(task.id, e)}
@@ -793,6 +818,7 @@ export default function App() {
                       task={task}
                       currentDayOfWeek={currentDayOfWeek}
                       currentDayOfMonth={currentDayOfMonth}
+                      logicalDateStr={logicalDateStr}
                       onToggle={() => toggleTask(task.id)}
                       onEdit={(e) => openEditModal(task, e)}
                       onDelete={(e) => deleteTask(task.id, e)}
@@ -845,6 +871,7 @@ export default function App() {
                   key={task.id}
                   task={task}
                   currentDayOfMonth={currentDayOfMonth}
+                  logicalDateStr={logicalDateStr}
                   onToggle={() => toggleTask(task.id)}
                   onEdit={(e) => openEditModal(task, e)}
                   onDelete={(e) => deleteTask(task.id, e)}
@@ -1124,6 +1151,53 @@ export default function App() {
                 </div>
               )}
 
+              {/* 巡回先URL & 終了期日（全スパン共通・任意） */}
+              <div className="p-3.5 rounded-xl bg-[#fbf5e6] border border-[#e6deca] space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#586e75] mb-1.5 flex items-center gap-1.5">
+                    <LinkIcon className="w-3.5 h-3.5 text-[#268bd2]" />
+                    <span>巡回先URL (任意)</span>
+                  </label>
+                  <input
+                    type="url"
+                    value={newUrl}
+                    onChange={(e) => setNewUrl(e.target.value)}
+                    placeholder="例: https://camp-fire.jp/projects/... または blog.example.com"
+                    className="w-full px-3 py-1.5 bg-[#fdf6e3] border border-[#dcd3bc] rounded-lg text-xs text-[#073642] placeholder-[#93a1a1] focus:outline-none focus:border-[#268bd2]"
+                  />
+                  <p className="text-[10px] text-[#839496] mt-1">
+                    ※カード上のチェーンアイコンからワンクリックで巡回先サイトを開けます
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-[#586e75] mb-1.5 flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-[#268bd2]" />
+                    <span>終了期日・目標日 (任意)</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      value={newDeadline}
+                      onChange={(e) => setNewDeadline(e.target.value)}
+                      className="px-3 py-1.5 bg-[#fdf6e3] border border-[#dcd3bc] rounded-lg text-xs text-[#073642] focus:outline-none focus:border-[#268bd2]"
+                    />
+                    {newDeadline && (
+                      <button
+                        type="button"
+                        onClick={() => setNewDeadline('')}
+                        className="px-2 py-1 text-[11px] text-[#dc322f] hover:bg-[#dc322f]/10 rounded-md transition"
+                      >
+                        日付クリア
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-[#839496] mt-1">
+                    ※期日が近づくとバッジや警告枠が表示されます（期日後も自動削除はされず手動で整理できます）
+                  </p>
+                </div>
+              </div>
+
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
@@ -1156,6 +1230,7 @@ function TaskCard({
   task,
   currentDayOfWeek,
   currentDayOfMonth,
+  logicalDateStr,
   onToggle,
   onEdit,
   onDelete,
@@ -1164,6 +1239,7 @@ function TaskCard({
   task: RoutineTask;
   currentDayOfWeek: number;
   currentDayOfMonth: number;
+  logicalDateStr: string;
   onToggle: () => void;
   onEdit: (e: React.MouseEvent) => void;
   onDelete: (e: React.MouseEvent) => void;
@@ -1185,10 +1261,15 @@ function TaskCard({
     isScheduled && !isTodayScheduledTask && !isOverdueScheduledTask;
   const monthlyStatus =
     task.span === 'monthly' ? getMonthlyStatus(task.monthlyDay, currentDayOfMonth) : null;
+  const deadlineStatus = getDeadlineStatus(task.deadline, logicalDateStr);
 
   // カードのボーダーと背景の動的スタイル
   let cardBorderClass = 'border-[#e6deca] hover:border-[#d3c8ab] bg-[#fffdf7] hover:bg-white shadow-2xs';
-  if (isTodayScheduledTask) {
+  if (deadlineStatus?.isToday) {
+    cardBorderClass = 'border-rose-400 ring-1 ring-rose-400/30 bg-[#fffbfb] hover:bg-white shadow-xs';
+  } else if (deadlineStatus?.isApproaching) {
+    cardBorderClass = 'border-amber-400 ring-1 ring-amber-400/30 bg-[#fffdf5] hover:bg-white shadow-2xs';
+  } else if (isTodayScheduledTask) {
     cardBorderClass = 'border-[#268bd2] ring-1 ring-[#268bd2]/30 shadow-xs bg-[#fffdf7] hover:bg-white';
   } else if (isOverdueScheduledTask) {
     cardBorderClass = 'border-amber-400 ring-1 ring-amber-400/30 bg-[#fffdf5] hover:bg-white shadow-2xs';
@@ -1200,7 +1281,11 @@ function TaskCard({
 
   // タイトル文字色
   let titleColorClass = 'text-[#073642] group-hover:text-[#002b36]';
-  if (isOverdueScheduledTask) {
+  if (deadlineStatus?.isToday) {
+    titleColorClass = 'text-rose-950 font-bold group-hover:text-rose-900';
+  } else if (deadlineStatus?.isApproaching) {
+    titleColorClass = 'text-amber-950 font-semibold group-hover:text-amber-900';
+  } else if (isOverdueScheduledTask) {
     titleColorClass = 'text-amber-950 font-semibold group-hover:text-amber-900';
   } else if (isOtherDayScheduledTask) {
     titleColorClass = 'text-[#657b83] font-medium group-hover:text-[#073642]';
@@ -1237,6 +1322,19 @@ function TaskCard({
             <span className={`text-sm font-semibold transition ${titleColorClass}`}>
               {task.title}
             </span>
+            {task.url && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openExternalUrl(task.url);
+                }}
+                className="p-1 text-[#268bd2] hover:text-[#1f78b8] hover:bg-[#268bd2]/15 rounded-md transition shrink-0 inline-flex items-center justify-center cursor-pointer"
+                title={`巡回先を開く: ${task.url}`}
+              >
+                <LinkIcon className="w-3.5 h-3.5" />
+              </button>
+            )}
             {isTodayScheduledTask && (
               <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-[#268bd2]/15 text-[#268bd2] border border-[#268bd2]/30 font-bold tracking-wide">
                 本日
@@ -1255,6 +1353,15 @@ function TaskCard({
             {monthlyStatus && (
               <span className={`text-[10px] px-1.5 py-0.2 rounded-md border font-semibold ${monthlyStatus.badgeClass}`}>
                 {monthlyStatus.label}
+              </span>
+            )}
+            {deadlineStatus && (
+              <span
+                className={`text-[10px] px-1.5 py-0.2 rounded-md border flex items-center gap-1 font-medium ${deadlineStatus.badgeClass}`}
+                title={`期日: ${task.deadline} (残り${deadlineStatus.remainingDays}日)`}
+              >
+                <Calendar className="w-2.5 h-2.5 shrink-0" />
+                <span>{deadlineStatus.label}</span>
               </span>
             )}
           </div>
@@ -1340,6 +1447,7 @@ function TaskCard({
 function DoneTaskCard({
   task,
   currentDayOfMonth: _currentDayOfMonth,
+  logicalDateStr,
   onToggle,
   onEdit,
   onDelete,
@@ -1347,11 +1455,14 @@ function DoneTaskCard({
 }: {
   task: RoutineTask;
   currentDayOfMonth: number;
+  logicalDateStr: string;
   onToggle: () => void;
   onEdit: (e: React.MouseEvent) => void;
   onDelete: (e: React.MouseEvent) => void;
   onDragStart: () => void;
 }) {
+  const deadlineStatus = getDeadlineStatus(task.deadline, logicalDateStr);
+
   return (
     <div
       draggable
@@ -1371,9 +1482,32 @@ function DoneTaskCard({
           <CheckCircle2 className="w-4 h-4 fill-[#859900]/20 stroke-[2.2]" />
         </button>
         <div>
-          <span className="text-sm font-normal text-[#839496] line-through group-hover:text-[#657b83] transition">
-            {task.title}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-normal text-[#839496] line-through group-hover:text-[#657b83] transition">
+              {task.title}
+            </span>
+            {task.url && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openExternalUrl(task.url);
+                }}
+                className="p-1 text-[#268bd2] hover:text-[#1f78b8] hover:bg-[#268bd2]/15 rounded-md transition shrink-0 inline-flex items-center justify-center opacity-80 hover:opacity-100 cursor-pointer"
+                title={`巡回先を開く: ${task.url}`}
+              >
+                <LinkIcon className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {deadlineStatus && (
+              <span
+                className="text-[9px] px-1.5 py-0.1 rounded border border-[#dcd3bc] bg-[#eee8d5] text-[#839496] font-medium"
+                title={`期日: ${task.deadline}`}
+              >
+                {deadlineStatus.label}
+              </span>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
             {/* 曜日またはスパンバッジ */}
             {(task.span === 'weekly' && task.weeklyType === 'day_of_week' && task.daysOfWeek) ||
