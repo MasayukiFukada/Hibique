@@ -6,10 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
+    "test": "node --test --experimental-strip-types 'src/**/*.test.ts' 'scripts/**/*.test.mjs'",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev; fuser -k 5173/tcp 2>/dev/null; stty sane < /dev/tty 2>/dev/null; tput cnorm 2>/dev/null || true"
+    "tauri:dev": "node scripts/tauri-dev.mjs",
+    "tauri:build:bin": "tauri build --no-bundle"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

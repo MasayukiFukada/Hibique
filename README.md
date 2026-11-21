@@ -86,11 +86,23 @@ mise install
 pnpm install
 ```
 
-### 開発モードの起動
+### 通常起動・開発モードの起動
 
 ```bash
-# Tauri デスクトップアプリとして起動
-pnpm tauri dev
+# リリース版を起動（未ビルド時は初回のみ自動ビルド）
+./run.sh
+
+# コード変更後にリリース版を再ビルドして起動
+./run.sh --rebuild
+
+# リリース版バイナリのビルドのみ実行
+./run.sh --build-only
+
+# 開発モードで起動（ポート競合時は空きポートを自動選択）
+./run.sh --dev
+# または環境変数 / npm スクリプトから起動
+HIBIQUE_MODE=dev ./run.sh
+pnpm tauri:dev
 
 # WebブラウザのみでモックUIを起動する場合
 pnpm dev
@@ -99,6 +111,9 @@ pnpm dev
 ### プロダクションビルド
 
 ```bash
+# デスクトップバイナリのみビルド（インストーラー生成なし）
+pnpm tauri:build:bin
+
 # デスクトップバイナリ（インストーラー/実行ファイル）のビルド
 pnpm tauri build
 ```
