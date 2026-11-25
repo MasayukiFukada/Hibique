@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   CheckCircle2,
   Circle,
@@ -21,6 +21,15 @@ import { RoutineTask, TaskSpan, AppSettings } from './types';
 import { db, initializeDatabase, persistDatabase, DatabaseSchema } from './services/db';
 import { evaluateTaskResets, getLogicalDate } from './services/resetLogic';
 import { getDeadlineStatus, sanitizeUrl, openExternalUrl } from './services/deadline';
+import {
+  KeyboardSelection,
+  TaskColumns,
+  moveVertical,
+  moveColumn,
+  getNextSelectionAfterToggle,
+  resolveSelectionAfterListChange,
+  isEditableElement,
+} from './services/keyboardNavigation';
 import { ProgressIndicator } from './components/ProgressIndicator';
 import { TodayCompletionCard } from './components/TodayCompletionCard';
 
@@ -180,6 +189,21 @@ export default function App() {
   const [newUrl, setNewUrl] = useState('');
   const [newDeadline, setNewDeadline] = useState('');
   const [editingTask, setEditingTask] = useState<RoutineTask | null>(null);
+  const [keyboardSelection, setKeyboardSelection] = useState<KeyboardSelection>({
+    column: 'todo',
+    taskId: null,
+  });
+  const [lastToggledTaskId, setLastToggledTaskId] = useState<string | null>(null);
+  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const spacePressedRef = useRef(false);
+
+  const setCardRef = (id: string, el: HTMLDivElement | null) => {
+    if (el) {
+      cardRefs.current.set(id, el);
+    } else {
+      cardRefs.current.delete(id);
+    }
+  };
 
   // 自動リセット評価（起動時 ＆ ウィンドウフォーカス時）
   const checkResets = (currentData: DatabaseSchema) => {
@@ -353,6 +377,50 @@ export default function App() {
     [tasks]
   );
 
+  // キーボード操作用の表示順IDリスト
+  const todoTaskIds = useMemo(
+    () =>
+      [
+        ...uncompletedDailyToday,
+        ...uncompletedDailyOtherDays,
+        ...uncompletedWeeklyActive,
+        ...uncompletedWeeklyUpcoming,
+        ...uncompletedMonthly,
+      ].map((t) => t.id),
+    [
+      uncompletedDailyToday,
+      uncompletedDailyOtherDays,
+      uncompletedWeeklyActive,
+      uncompletedWeeklyUpcoming,
+      uncompletedMonthly,
+    ]
+  );
+
+  const doneTaskIds = useMemo(() => completedTasks.map((t) => t.id), [completedTasks]);
+
+  const taskColumns = useMemo<TaskColumns>(
+    () => ({ todoIds: todoTaskIds, doneIds: doneTaskIds }),
+    [todoTaskIds, doneTaskIds]
+  );
+
+  // リスト変化時に存在しない選択IDを正規化
+  useEffect(() => {
+    setKeyboardSelection((prev) => {
+      const next = resolveSelectionAfterListChange(prev, taskColumns);
+      if (next.column === prev.column && next.taskId === prev.taskId) {
+        return prev;
+      }
+      return next;
+    });
+  }, [taskColumns]);
+
+  // 選択中タスクへの自動スクロール追従
+  useEffect(() => {
+    if (!keyboardSelection.taskId) return;
+    const el = cardRefs.current.get(keyboardSelection.taskId);
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [keyboardSelection.taskId]);
+
   // 本日のノルマ対象タスク（本日該当のDaily ＋ 今日の曜日に該当する曜日指定Weeklyタスク）
   const todayTasks = useMemo(
     () =>
@@ -391,20 +459,189 @@ export default function App() {
   };
 
   // タスクのトグル（完了・未完了切り替え）
-  const toggleTask = (id: string) => {
-    const updated = tasks.map((t) => {
-      if (t.id === id) {
-        const nextState = !t.isCompleted;
-        return {
-          ...t,
-          isCompleted: nextState,
-          completedAt: nextState ? new Date().toISOString() : null,
-        };
+  const toggleTask = (
+    id: string,
+    options?: { fromKeyboard?: boolean; isUndo?: boolean }
+  ) => {
+    const target = tasks.find((t) => t.id === id);
+    if (!target) return;
+
+    const nextIsCompleted = !target.isCompleted;
+    const updated = tasks.map((t) =>
+      t.id === id
+        ? {
+            ...t,
+            isCompleted: nextIsCompleted,
+            completedAt: nextIsCompleted ? new Date().toISOString() : null,
+          }
+        : t
+    );
+
+    if (options?.isUndo) {
+      setLastToggledTaskId(null);
+      setKeyboardSelection({
+        column: nextIsCompleted ? 'done' : 'todo',
+        taskId: id,
+      });
+    } else {
+      setLastToggledTaskId(id);
+      if (options?.fromKeyboard || keyboardSelection.taskId === id) {
+        setKeyboardSelection((prev) => getNextSelectionAfterToggle(prev, taskColumns, id));
       }
-      return t;
-    });
+    }
+
     syncTasks(updated);
   };
+
+  // グローバルキーボードナビゲーション・タスク消化ショートカット
+  useEffect(() => {
+    if (!isLoaded) return;
+
+    const blurActiveElement = () => {
+      if (
+        document.activeElement instanceof HTMLElement &&
+        document.activeElement !== document.body
+      ) {
+        document.activeElement.blur();
+      }
+    };
+
+    const activateCurrentOrSelectFirst = () => {
+      if (keyboardSelection.taskId) {
+        toggleTask(keyboardSelection.taskId, { fromKeyboard: true });
+      } else {
+        setKeyboardSelection((prev) => moveVertical(prev, taskColumns, 1));
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isAddModalOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setIsAddModalOpen(false);
+          setEditingTask(null);
+        }
+        return;
+      }
+
+      if (e.isComposing || isEditableElement(e.target)) {
+        return;
+      }
+
+      const lowerKey = e.key.toLowerCase();
+      const isCtrlOrMetaZ =
+        (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && lowerKey === 'z';
+      const isPlainU =
+        !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && lowerKey === 'u';
+
+      if (isCtrlOrMetaZ || isPlainU) {
+        if (lastToggledTaskId && tasks.some((t) => t.id === lastToggledTaskId)) {
+          e.preventDefault();
+          toggleTask(lastToggledTaskId, { isUndo: true });
+        }
+        return;
+      }
+
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        return;
+      }
+
+      if (e.key === 'ArrowDown' || (!e.shiftKey && lowerKey === 'j')) {
+        e.preventDefault();
+        blurActiveElement();
+        setKeyboardSelection((prev) => moveVertical(prev, taskColumns, 1));
+        return;
+      }
+
+      if (e.key === 'ArrowUp' || (!e.shiftKey && lowerKey === 'k')) {
+        e.preventDefault();
+        blurActiveElement();
+        setKeyboardSelection((prev) => moveVertical(prev, taskColumns, -1));
+        return;
+      }
+
+      if (e.key === 'ArrowRight' || (!e.shiftKey && lowerKey === 'l')) {
+        e.preventDefault();
+        blurActiveElement();
+        setKeyboardSelection((prev) => moveColumn(prev, taskColumns, 'done'));
+        return;
+      }
+
+      if (e.key === 'ArrowLeft' || (!e.shiftKey && lowerKey === 'h')) {
+        e.preventDefault();
+        blurActiveElement();
+        setKeyboardSelection((prev) => moveColumn(prev, taskColumns, 'todo'));
+        return;
+      }
+
+      const isInteractiveTarget =
+        e.target instanceof Element && Boolean(e.target.closest('button, a'));
+
+      if (e.key === 'Enter') {
+        if (isInteractiveTarget || e.repeat) return;
+        e.preventDefault();
+        activateCurrentOrSelectFirst();
+        return;
+      }
+
+      if (e.key === ' ') {
+        if (isInteractiveTarget) return;
+        e.preventDefault();
+        if (!e.repeat) {
+          spacePressedRef.current = true;
+        }
+        return;
+      }
+
+      if (!e.shiftKey && lowerKey === 'o') {
+        if (isInteractiveTarget) return;
+        if (keyboardSelection.taskId) {
+          const selectedTask = tasks.find((t) => t.id === keyboardSelection.taskId);
+          if (selectedTask?.url) {
+            e.preventDefault();
+            openExternalUrl(selectedTask.url);
+          }
+        }
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        if (keyboardSelection.taskId !== null) {
+          e.preventDefault();
+          setKeyboardSelection((prev) => ({ ...prev, taskId: null }));
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (isAddModalOpen) {
+        spacePressedRef.current = false;
+        return;
+      }
+
+      if (e.key === ' ' && spacePressedRef.current) {
+        spacePressedRef.current = false;
+        if (e.isComposing || isEditableElement(e.target)) return;
+        if (e.target instanceof Element && e.target.closest('button, a')) return;
+        e.preventDefault();
+        activateCurrentOrSelectFirst();
+      }
+    };
+
+    const handleWindowBlur = () => {
+      spacePressedRef.current = false;
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, [isLoaded, isAddModalOpen, keyboardSelection, taskColumns, tasks, lastToggledTaskId]);
 
   // タスク削除
   const deleteTask = (id: string, e: React.MouseEvent) => {
@@ -582,313 +819,392 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#fdf6e3] text-[#586e75] font-sans selection:bg-[#268bd2]/20">
-      {/* ── ヘッダー (Solarized Light: Cream / Ivory) ── */}
-      <header className="flex-none px-6 py-3.5 bg-[#fbf5e6] border-b border-[#e6deca] flex items-center justify-between shadow-xs">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-[#268bd2] to-[#2aa198] flex items-center justify-center shadow-xs">
-            <Sparkles className="w-4 h-4 text-white" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-base font-bold tracking-tight text-[#073642]">
-                Hibique
-              </h1>
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#eee8d5] text-[#268bd2] border border-[#d3c8ab] font-semibold">
-                日々キュー
-              </span>
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#859900]/10 text-[#859900] border border-[#859900]/30 font-medium flex items-center gap-1">
-                <Database className="w-3 h-3" />
-                <span>Lowdb (JSON)</span>
-              </span>
+    <>
+      <div
+        inert={isAddModalOpen}
+        className="flex flex-col h-screen w-screen bg-[#fdf6e3] text-[#586e75] font-sans selection:bg-[#268bd2]/20"
+      >
+        {/* ── ヘッダー (Solarized Light: Cream / Ivory) ── */}
+        <header className="flex-none px-6 py-3.5 bg-[#fbf5e6] border-b border-[#e6deca] flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-[#268bd2] to-[#2aa198] flex items-center justify-center shadow-xs">
+              <Sparkles className="w-4 h-4 text-white" />
             </div>
-            <p className="text-xs text-[#839496] flex items-center gap-1.5 mt-0.5">
-              <span className="font-medium text-[#657b83]">📅 {dateStr}</span>
-              <span>•</span>
-              <span>月曜始まり (日終)</span>
-              <span>•</span>
-              <span>リセット: 毎日 04:00</span>
-            </p>
-          </div>
-        </div>
-
-        {/* 進捗プログレス ＆ アクション */}
-        <div className="flex items-center gap-5">
-          <ProgressIndicator
-            todayDone={todayDone}
-            todayTotal={todayTotal}
-            progressPercent={progressPercent}
-            isTodayAllDone={isTodayAllDone}
-            totalCompletedCount={completedTasks.length}
-          />
-
-          {/* アクションボタン */}
-          <div>
-            <button
-              onClick={openAddModal}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-[#268bd2] hover:bg-[#1f78b8] active:scale-95 rounded-lg shadow-xs transition"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>タスク追加</span>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* ── メインカンバン領域 ── */}
-      <main className="flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden">
-        {/* ── 左側：未完了カラム (To Do) ── */}
-        <section
-          onDragOver={(e) => {
-            e.preventDefault();
-            setIsTodoDragOver(true);
-          }}
-          onDragLeave={() => setIsTodoDragOver(false)}
-          onDrop={handleDropOnTodo}
-          className={`col-span-7 flex flex-col rounded-2xl bg-[#fbf5e6]/80 border ${
-            isTodoDragOver
-              ? 'border-[#268bd2] bg-[#268bd2]/10 ring-2 ring-[#268bd2]/30'
-              : 'border-[#e6deca]'
-          } overflow-hidden shadow-xs backdrop-blur-sm transition`}
-        >
-          <div className="px-5 py-3 bg-[#f5eece]/90 border-b border-[#e6deca] flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Inbox className="w-4 h-4 text-[#268bd2]" />
-              <h2 className="text-sm font-bold text-[#073642]">
-                未完了 (To Do)
-              </h2>
-            </div>
-            <span className="text-xs text-[#586e75] bg-[#eee8d5] px-2 py-0.5 rounded-full border border-[#dcd3bc] font-medium">
-              残り {uncompletedDailyToday.length + uncompletedDailyOtherDays.length + uncompletedWeeklyActive.length + uncompletedWeeklyUpcoming.length + uncompletedMonthly.length} 件
-            </span>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {/* ── 1. Daily (毎日・定期ルーティーン) ── */}
             <div>
-              <div className="flex items-center gap-2 text-xs font-bold text-[#b58900] mb-2 px-1 tracking-wider uppercase">
-                <Sun className="w-3.5 h-3.5" />
-                <span>今日のルーティーン (Daily)</span>
-                <span className="text-[#839496] font-normal ml-auto">
-                  {uncompletedDailyToday.length} 件
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold tracking-tight text-[#073642]">
+                  Hibique
+                </h1>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#eee8d5] text-[#268bd2] border border-[#d3c8ab] font-semibold">
+                  日々キュー
+                </span>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#859900]/10 text-[#859900] border border-[#859900]/30 font-medium flex items-center gap-1">
+                  <Database className="w-3 h-3" />
+                  <span>Lowdb (JSON)</span>
                 </span>
               </div>
-              <div className="space-y-1.5">
-                {uncompletedDailyToday.length === 0 ? (
-                  todayTotal > 0 && isTodayAllDone ? (
-                    <TodayCompletionCard todayDone={todayDone} />
-                  ) : todayTotal > 0 && !isTodayAllDone ? (
-                    <div className="p-3.5 rounded-xl border border-dashed border-[#859900]/40 bg-[#859900]/5 text-center text-xs text-[#586e75] flex items-center justify-center gap-2">
-                      <Sparkles className="w-3.5 h-3.5 text-[#859900]" />
-                      <span>今日のDailyルーティーンは完了！ 続いて本日の曜日タスクへどうぞ ✨</span>
+              <p className="text-xs text-[#839496] flex items-center gap-1.5 mt-0.5">
+                <span className="font-medium text-[#657b83]">📅 {dateStr}</span>
+                <span>•</span>
+                <span>月曜始まり (日終)</span>
+                <span>•</span>
+                <span>リセット: 毎日 04:00</span>
+              </p>
+            </div>
+          </div>
+
+          {/* 進捗プログレス ＆ アクション */}
+          <div className="flex items-center gap-5">
+            <ProgressIndicator
+              todayDone={todayDone}
+              todayTotal={todayTotal}
+              progressPercent={progressPercent}
+              isTodayAllDone={isTodayAllDone}
+              totalCompletedCount={completedTasks.length}
+            />
+
+            {/* アクションボタン */}
+            <div>
+              <button
+                onClick={openAddModal}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-[#268bd2] hover:bg-[#1f78b8] active:scale-95 rounded-lg shadow-xs transition"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>タスク追加</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {/* ── メインカンバン領域 ── */}
+        <main className="flex-1 grid grid-cols-12 gap-5 p-5 overflow-hidden">
+          {/* ── 左側：未完了カラム (To Do) ── */}
+          <section
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsTodoDragOver(true);
+            }}
+            onDragLeave={() => setIsTodoDragOver(false)}
+            onDrop={handleDropOnTodo}
+            className={`col-span-7 flex flex-col rounded-2xl bg-[#fbf5e6]/80 border ${
+              isTodoDragOver
+                ? 'border-[#268bd2] bg-[#268bd2]/10 ring-2 ring-[#268bd2]/30'
+                : 'border-[#e6deca]'
+            } overflow-hidden shadow-xs backdrop-blur-sm transition`}
+          >
+            <div className="px-5 py-3 bg-[#f5eece]/90 border-b border-[#e6deca] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Inbox className="w-4 h-4 text-[#268bd2]" />
+                <h2 className="text-sm font-bold text-[#073642]">
+                  未完了 (To Do)
+                </h2>
+              </div>
+              <span className="text-xs text-[#586e75] bg-[#eee8d5] px-2 py-0.5 rounded-full border border-[#dcd3bc] font-medium">
+                残り {uncompletedDailyToday.length + uncompletedDailyOtherDays.length + uncompletedWeeklyActive.length + uncompletedWeeklyUpcoming.length + uncompletedMonthly.length} 件
+              </span>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* ── 1. Daily (毎日・定期ルーティーン) ── */}
+              <div>
+                <div className="flex items-center gap-2 text-xs font-bold text-[#b58900] mb-2 px-1 tracking-wider uppercase">
+                  <Sun className="w-3.5 h-3.5" />
+                  <span>今日のルーティーン (Daily)</span>
+                  <span className="text-[#839496] font-normal ml-auto">
+                    {uncompletedDailyToday.length} 件
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  {uncompletedDailyToday.length === 0 ? (
+                    todayTotal > 0 && isTodayAllDone ? (
+                      <TodayCompletionCard todayDone={todayDone} />
+                    ) : todayTotal > 0 && !isTodayAllDone ? (
+                      <div className="p-3.5 rounded-xl border border-dashed border-[#859900]/40 bg-[#859900]/5 text-center text-xs text-[#586e75] flex items-center justify-center gap-2">
+                        <Sparkles className="w-3.5 h-3.5 text-[#859900]" />
+                        <span>今日のDailyルーティーンは完了！ 続いて本日の曜日タスクへどうぞ ✨</span>
+                      </div>
+                    ) : (
+                      <div className="p-3 rounded-xl border border-dashed border-[#dcd3bc] text-center text-xs text-[#839496]">
+                        本日のノルマ対象タスクはありません
+                      </div>
+                    )
+                  ) : (
+                    uncompletedDailyToday.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        currentDayOfWeek={currentDayOfWeek}
+                        currentDayOfMonth={currentDayOfMonth}
+                        logicalDateStr={logicalDateStr}
+                        isSelected={
+                          keyboardSelection.column === 'todo' &&
+                          keyboardSelection.taskId === task.id
+                        }
+                        cardRef={(el) => setCardRef(task.id, el)}
+                        onToggle={() => toggleTask(task.id)}
+                        onEdit={(e) => openEditModal(task, e)}
+                        onDelete={(e) => deleteTask(task.id, e)}
+                        onDragStart={() => handleDragStart(task.id)}
+                      />
+                    ))
+                  )}
+                </div>
+
+                {/* 他曜日のデイリー（本日はお休み / 控え） */}
+                {uncompletedDailyOtherDays.length > 0 && (
+                  <div className="mt-2.5 pt-2 border-t border-[#e6deca]/60">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#839496] mb-1.5 px-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#93a1a1]" />
+                      <span>他曜日のデイリー (本日はお休み / 控え)</span>
+                      <span className="text-[10px] text-[#93a1a1] ml-1 font-normal">※前倒し消化も可能</span>
+                      <span className="text-[#93a1a1] font-normal ml-auto">
+                        {uncompletedDailyOtherDays.length} 件
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {uncompletedDailyOtherDays.map((task) => (
+                        <TaskCard
+                          key={task.id}
+                          task={task}
+                          currentDayOfWeek={currentDayOfWeek}
+                          currentDayOfMonth={currentDayOfMonth}
+                          logicalDateStr={logicalDateStr}
+                          isSelected={
+                            keyboardSelection.column === 'todo' &&
+                            keyboardSelection.taskId === task.id
+                          }
+                          cardRef={(el) => setCardRef(task.id, el)}
+                          onToggle={() => toggleTask(task.id)}
+                          onEdit={(e) => openEditModal(task, e)}
+                          onDelete={(e) => deleteTask(task.id, e)}
+                          onDragStart={() => handleDragStart(task.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── 2. Weekly (今週のタスク) ── */}
+              <div className="p-3.5 rounded-2xl bg-[#f5eed6] border border-[#e6deca]">
+                <div className="flex items-center gap-2 text-xs font-bold text-[#268bd2] mb-3 px-1 tracking-wider uppercase">
+                  <Calendar className="w-3.5 h-3.5" />
+                  <span>今週のタスク (Weekly)</span>
+                  <span className="text-[#839496] text-[11px] font-normal ml-auto">
+                    月曜〜日曜で消化
+                  </span>
+                </div>
+
+                {/* メイン: 今週消化するタスク (未消化 + 本日 + いつでも) */}
+                <div className="space-y-1.5">
+                  {uncompletedWeeklyActive.length === 0 ? (
+                    <div className="p-3 rounded-xl border border-dashed border-[#dcd3bc] text-center text-xs text-[#839496]">
+                      今週消化するタスクはありません
                     </div>
                   ) : (
-                    <div className="p-3 rounded-xl border border-dashed border-[#dcd3bc] text-center text-xs text-[#839496]">
-                      本日のノルマ対象タスクはありません
+                    uncompletedWeeklyActive.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        currentDayOfWeek={currentDayOfWeek}
+                        currentDayOfMonth={currentDayOfMonth}
+                        logicalDateStr={logicalDateStr}
+                        isSelected={
+                          keyboardSelection.column === 'todo' &&
+                          keyboardSelection.taskId === task.id
+                        }
+                        cardRef={(el) => setCardRef(task.id, el)}
+                        onToggle={() => toggleTask(task.id)}
+                        onEdit={(e) => openEditModal(task, e)}
+                        onDelete={(e) => deleteTask(task.id, e)}
+                        onDragStart={() => handleDragStart(task.id)}
+                      />
+                    ))
+                  )}
+                </div>
+
+                {/* サブ: 他曜日のルーティーン (今週の控え・明日以降) */}
+                {uncompletedWeeklyUpcoming.length > 0 && (
+                  <div className="mt-3 pt-2.5 border-t border-[#e6deca]/60">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#839496] mb-1.5 px-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#93a1a1]" />
+                      <span>他曜日のルーティーン (今週の控え)</span>
+                      <span className="text-[10px] text-[#93a1a1] ml-1 font-normal">※前倒し消化も可能</span>
+                      <span className="text-[#93a1a1] font-normal ml-auto">
+                        {uncompletedWeeklyUpcoming.length} 件
+                      </span>
                     </div>
-                  )
-                ) : (
-                  uncompletedDailyToday.map((task) => (
-                    <TaskCard
-                      key={task.id}
-                      task={task}
-                      currentDayOfWeek={currentDayOfWeek}
-                      currentDayOfMonth={currentDayOfMonth}
-                      logicalDateStr={logicalDateStr}
-                      onToggle={() => toggleTask(task.id)}
-                      onEdit={(e) => openEditModal(task, e)}
-                      onDelete={(e) => deleteTask(task.id, e)}
-                      onDragStart={() => handleDragStart(task.id)}
-                    />
-                  ))
+                    <div className="space-y-1.5">
+                      {uncompletedWeeklyUpcoming.map((task) => (
+                        <TaskCard
+                          key={task.id}
+                          task={task}
+                          currentDayOfWeek={currentDayOfWeek}
+                          currentDayOfMonth={currentDayOfMonth}
+                          logicalDateStr={logicalDateStr}
+                          isSelected={
+                            keyboardSelection.column === 'todo' &&
+                            keyboardSelection.taskId === task.id
+                          }
+                          cardRef={(el) => setCardRef(task.id, el)}
+                          onToggle={() => toggleTask(task.id)}
+                          onEdit={(e) => openEditModal(task, e)}
+                          onDelete={(e) => deleteTask(task.id, e)}
+                          onDragStart={() => handleDragStart(task.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
 
-              {/* 他曜日のデイリー（本日はお休み / 控え） */}
-              {uncompletedDailyOtherDays.length > 0 && (
-                <div className="mt-2.5 pt-2 border-t border-[#e6deca]/60">
-                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#839496] mb-1.5 px-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#93a1a1]" />
-                    <span>他曜日のデイリー (本日はお休み / 控え)</span>
-                    <span className="text-[10px] text-[#93a1a1] ml-1 font-normal">※前倒し消化も可能</span>
-                    <span className="text-[#93a1a1] font-normal ml-auto">
-                      {uncompletedDailyOtherDays.length} 件
-                    </span>
-                  </div>
-                  <div className="space-y-1.5">
-                    {uncompletedDailyOtherDays.map((task) => (
+              {/* ── 3. Monthly (今月のタスク) ── */}
+              <div>
+                <div className="flex items-center gap-2 text-xs font-bold text-[#d33682] mb-2 px-1 tracking-wider uppercase">
+                  <CalendarDays className="w-3.5 h-3.5" />
+                  <span>今月のタスク (Monthly)</span>
+                  <span className="text-[#839496] font-normal ml-auto">
+                    {uncompletedMonthly.length} 件
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  {uncompletedMonthly.length === 0 ? (
+                    <div className="p-3 rounded-xl border border-dashed border-[#dcd3bc] text-center text-xs text-[#839496]">
+                      今月のタスクはありません
+                    </div>
+                  ) : (
+                    uncompletedMonthly.map((task) => (
                       <TaskCard
                         key={task.id}
                         task={task}
                         currentDayOfWeek={currentDayOfWeek}
                         currentDayOfMonth={currentDayOfMonth}
                         logicalDateStr={logicalDateStr}
+                        isSelected={
+                          keyboardSelection.column === 'todo' &&
+                          keyboardSelection.taskId === task.id
+                        }
+                        cardRef={(el) => setCardRef(task.id, el)}
                         onToggle={() => toggleTask(task.id)}
                         onEdit={(e) => openEditModal(task, e)}
                         onDelete={(e) => deleteTask(task.id, e)}
                         onDragStart={() => handleDragStart(task.id)}
                       />
-                    ))}
-                  </div>
+                    ))
+                  )}
                 </div>
+              </div>
+            </div>
+          </section>
+
+          {/* ── 右側：完了カラム (Done) ── */}
+          <section
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDoneDragOver(true);
+            }}
+            onDragLeave={() => setIsDoneDragOver(false)}
+            onDrop={handleDropOnDone}
+            className={`col-span-5 flex flex-col rounded-2xl bg-[#fbf5e6]/80 border ${
+              isDoneDragOver
+                ? 'border-[#859900] bg-[#859900]/10 ring-2 ring-[#859900]/30'
+                : 'border-[#e6deca]'
+            } overflow-hidden shadow-xs backdrop-blur-sm transition`}
+          >
+            <div className="px-5 py-3 bg-[#f5eece]/90 border-b border-[#e6deca] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <CheckCheck className="w-4 h-4 text-[#859900]" />
+                <h2 className="text-sm font-bold text-[#073642]">
+                  完了 (Done)
+                </h2>
+              </div>
+              <span className="text-xs text-[#859900] bg-[#859900]/10 px-2 py-0.5 rounded-full border border-[#859900]/30 font-semibold">
+                {completedTasks.length} 件 完了
+              </span>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {completedTasks.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center p-6 text-center text-[#839496] border border-dashed border-[#dcd3bc] rounded-xl">
+                  <CheckCircle2 className="w-8 h-8 text-[#93a1a1] mb-2 opacity-60" />
+                  <p className="text-xs font-medium text-[#657b83]">左のタスクをクリックするか、</p>
+                  <p className="text-xs">ここへドラッグして完了へ放り込もう！</p>
+                  <p className="text-[11px] text-[#93a1a1] mt-2">※日曜から月曜のリセット時までここに残ります</p>
+                </div>
+              ) : (
+                completedTasks.map((task) => (
+                  <DoneTaskCard
+                    key={task.id}
+                    task={task}
+                    currentDayOfMonth={currentDayOfMonth}
+                    logicalDateStr={logicalDateStr}
+                    isSelected={
+                      keyboardSelection.column === 'done' &&
+                      keyboardSelection.taskId === task.id
+                    }
+                    cardRef={(el) => setCardRef(task.id, el)}
+                    onToggle={() => toggleTask(task.id)}
+                    onEdit={(e) => openEditModal(task, e)}
+                    onDelete={(e) => deleteTask(task.id, e)}
+                    onDragStart={() => handleDragStart(task.id)}
+                  />
+                ))
               )}
             </div>
+          </section>
+        </main>
 
-            {/* ── 2. Weekly (今週のタスク) ── */}
-            <div className="p-3.5 rounded-2xl bg-[#f5eed6] border border-[#e6deca]">
-              <div className="flex items-center gap-2 text-xs font-bold text-[#268bd2] mb-3 px-1 tracking-wider uppercase">
-                <Calendar className="w-3.5 h-3.5" />
-                <span>今週のタスク (Weekly)</span>
-                <span className="text-[#839496] text-[11px] font-normal ml-auto">
-                  月曜〜日曜で消化
-                </span>
-              </div>
-
-              {/* メイン: 今週消化するタスク (未消化 + 本日 + いつでも) */}
-              <div className="space-y-1.5">
-                {uncompletedWeeklyActive.length === 0 ? (
-                  <div className="p-3 rounded-xl border border-dashed border-[#dcd3bc] text-center text-xs text-[#839496]">
-                    今週消化するタスクはありません
-                  </div>
-                ) : (
-                  uncompletedWeeklyActive.map((task) => (
-                    <TaskCard
-                      key={task.id}
-                      task={task}
-                      currentDayOfWeek={currentDayOfWeek}
-                      currentDayOfMonth={currentDayOfMonth}
-                      logicalDateStr={logicalDateStr}
-                      onToggle={() => toggleTask(task.id)}
-                      onEdit={(e) => openEditModal(task, e)}
-                      onDelete={(e) => deleteTask(task.id, e)}
-                      onDragStart={() => handleDragStart(task.id)}
-                    />
-                  ))
-                )}
-              </div>
-
-              {/* サブ: 他曜日のルーティーン (今週の控え・明日以降) */}
-              {uncompletedWeeklyUpcoming.length > 0 && (
-                <div className="mt-3 pt-2.5 border-t border-[#e6deca]/60">
-                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#839496] mb-1.5 px-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#93a1a1]" />
-                    <span>他曜日のルーティーン (今週の控え)</span>
-                    <span className="text-[10px] text-[#93a1a1] ml-1 font-normal">※前倒し消化も可能</span>
-                    <span className="text-[#93a1a1] font-normal ml-auto">
-                      {uncompletedWeeklyUpcoming.length} 件
-                    </span>
-                  </div>
-                  <div className="space-y-1.5">
-                    {uncompletedWeeklyUpcoming.map((task) => (
-                      <TaskCard
-                        key={task.id}
-                        task={task}
-                        currentDayOfWeek={currentDayOfWeek}
-                        currentDayOfMonth={currentDayOfMonth}
-                        logicalDateStr={logicalDateStr}
-                        onToggle={() => toggleTask(task.id)}
-                        onEdit={(e) => openEditModal(task, e)}
-                        onDelete={(e) => deleteTask(task.id, e)}
-                        onDragStart={() => handleDragStart(task.id)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* ── 3. Monthly (今月のタスク) ── */}
-            <div>
-              <div className="flex items-center gap-2 text-xs font-bold text-[#d33682] mb-2 px-1 tracking-wider uppercase">
-                <CalendarDays className="w-3.5 h-3.5" />
-                <span>今月のタスク (Monthly)</span>
-                <span className="text-[#839496] font-normal ml-auto">
-                  {uncompletedMonthly.length} 件
-                </span>
-              </div>
-              <div className="space-y-1.5">
-                {uncompletedMonthly.length === 0 ? (
-                  <div className="p-3 rounded-xl border border-dashed border-[#dcd3bc] text-center text-xs text-[#839496]">
-                    今月のタスクはありません
-                  </div>
-                ) : (
-                  uncompletedMonthly.map((task) => (
-                    <TaskCard
-                      key={task.id}
-                      task={task}
-                      currentDayOfWeek={currentDayOfWeek}
-                      currentDayOfMonth={currentDayOfMonth}
-                      logicalDateStr={logicalDateStr}
-                      onToggle={() => toggleTask(task.id)}
-                      onEdit={(e) => openEditModal(task, e)}
-                      onDelete={(e) => deleteTask(task.id, e)}
-                      onDragStart={() => handleDragStart(task.id)}
-                    />
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ── 右側：完了カラム (Done) ── */}
-        <section
-          onDragOver={(e) => {
-            e.preventDefault();
-            setIsDoneDragOver(true);
-          }}
-          onDragLeave={() => setIsDoneDragOver(false)}
-          onDrop={handleDropOnDone}
-          className={`col-span-5 flex flex-col rounded-2xl bg-[#fbf5e6]/80 border ${
-            isDoneDragOver
-              ? 'border-[#859900] bg-[#859900]/10 ring-2 ring-[#859900]/30'
-              : 'border-[#e6deca]'
-          } overflow-hidden shadow-xs backdrop-blur-sm transition`}
-        >
-          <div className="px-5 py-3 bg-[#f5eece]/90 border-b border-[#e6deca] flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <CheckCheck className="w-4 h-4 text-[#859900]" />
-              <h2 className="text-sm font-bold text-[#073642]">
-                完了 (Done)
-              </h2>
-            </div>
-            <span className="text-xs text-[#859900] bg-[#859900]/10 px-2 py-0.5 rounded-full border border-[#859900]/30 font-semibold">
-              {completedTasks.length} 件 完了
-            </span>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4 space-y-2">
-            {completedTasks.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center p-6 text-center text-[#839496] border border-dashed border-[#dcd3bc] rounded-xl">
-                <CheckCircle2 className="w-8 h-8 text-[#93a1a1] mb-2 opacity-60" />
-                <p className="text-xs font-medium text-[#657b83]">左のタスクをクリックするか、</p>
-                <p className="text-xs">ここへドラッグして完了へ放り込もう！</p>
-                <p className="text-[11px] text-[#93a1a1] mt-2">※日曜から月曜のリセット時までここに残ります</p>
-              </div>
-            ) : (
-              completedTasks.map((task) => (
-                <DoneTaskCard
-                  key={task.id}
-                  task={task}
-                  currentDayOfMonth={currentDayOfMonth}
-                  logicalDateStr={logicalDateStr}
-                  onToggle={() => toggleTask(task.id)}
-                  onEdit={(e) => openEditModal(task, e)}
-                  onDelete={(e) => deleteTask(task.id, e)}
-                  onDragStart={() => handleDragStart(task.id)}
-                />
-              ))
-            )}
-          </div>
-        </section>
-      </main>
+        {/* ── キーボード操作ガイド ── */}
+        <footer className="flex-none px-5 py-2 bg-[#fbf5e6] border-t border-[#e6deca] text-[11px] text-[#657b83] flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">↑↓</kbd>
+            <span>/</span>
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">j</kbd>
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">k</kbd>
+            <span className="ml-0.5">移動</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">←→</kbd>
+            <span>/</span>
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">h</kbd>
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">l</kbd>
+            <span className="ml-0.5">完了/未完了</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">Enter</kbd>
+            <span>/</span>
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">Space</kbd>
+            <span className="ml-0.5">消化・戻す</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">o</kbd>
+            <span className="ml-0.5">URLを開く</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">u</kbd>
+            <span className="ml-0.5">元に戻す</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded bg-[#eee8d5] border border-[#dcd3bc] text-[#073642] font-mono text-[10px]">Esc</kbd>
+            <span className="ml-0.5">選択解除</span>
+          </span>
+        </footer>
+      </div>
 
       {/* ── 新規追加 / 編集モーダル ── */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-2xs p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="task-modal-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-2xs p-4"
+        >
           <div className="w-full max-w-md bg-[#fffdf7] border border-[#dcd3bc] rounded-2xl p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-bold text-[#073642] flex items-center gap-2">
+              <h3
+                id="task-modal-title"
+                className="text-base font-bold text-[#073642] flex items-center gap-2"
+              >
                 {editingTask ? (
                   <>
                     <Pencil className="w-4 h-4 text-[#268bd2]" />
@@ -902,6 +1218,8 @@ export default function App() {
                 )}
               </h3>
               <button
+                type="button"
+                aria-label="モーダルを閉じる"
                 onClick={() => {
                   setIsAddModalOpen(false);
                   setEditingTask(null);
@@ -1221,7 +1539,7 @@ export default function App() {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -1231,6 +1549,8 @@ function TaskCard({
   currentDayOfWeek,
   currentDayOfMonth,
   logicalDateStr,
+  isSelected,
+  cardRef,
   onToggle,
   onEdit,
   onDelete,
@@ -1240,6 +1560,8 @@ function TaskCard({
   currentDayOfWeek: number;
   currentDayOfMonth: number;
   logicalDateStr: string;
+  isSelected: boolean;
+  cardRef: (el: HTMLDivElement | null) => void;
   onToggle: () => void;
   onEdit: (e: React.MouseEvent) => void;
   onDelete: (e: React.MouseEvent) => void;
@@ -1293,16 +1615,28 @@ function TaskCard({
     titleColorClass = monthlyStatus.textClass;
   }
 
+  const actionRevealClass = `opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ${
+    isSelected ? 'opacity-100' : ''
+  }`;
+
   return (
     <div
+      ref={cardRef}
+      data-task-id={task.id}
+      data-selected={isSelected ? 'true' : undefined}
       draggable
       onDragStart={onDragStart}
       onClick={onToggle}
-      className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer active:scale-[0.99] transition duration-150 border ${cardBorderClass}`}
+      className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer active:scale-[0.99] transition duration-150 border ${cardBorderClass} ${
+        isSelected
+          ? 'outline-2 outline-offset-2 outline-[#268bd2] bg-[#f4f9fd] opacity-100'
+          : ''
+      }`}
     >
       <div className="flex items-center gap-3">
         <button
           type="button"
+          aria-label={`${task.title} を${isOtherDayScheduledTask ? '前倒し完了' : '完了'}にする`}
           onClick={(e) => {
             e.stopPropagation();
             onToggle();
@@ -1325,6 +1659,7 @@ function TaskCard({
             {task.url && (
               <button
                 type="button"
+                aria-label={`${task.title} の巡回先URLを開く`}
                 onClick={(e) => {
                   e.stopPropagation();
                   openExternalUrl(task.url);
@@ -1418,22 +1753,32 @@ function TaskCard({
       </div>
 
       <div className="flex items-center gap-1.5">
-        <span className="opacity-0 group-hover:opacity-100 text-xs text-[#268bd2] font-medium flex items-center gap-0.5 transition">
-          <span>{isOtherDayScheduledTask ? '前倒し完了へ' : '完了へ'}</span>
+        <span className={`${actionRevealClass} text-xs text-[#268bd2] font-medium flex items-center gap-0.5 transition`}>
+          <span>
+            {isSelected
+              ? isOtherDayScheduledTask
+                ? '前倒し完了 [Enter]'
+                : '完了へ [Enter]'
+              : isOtherDayScheduledTask
+              ? '前倒し完了へ'
+              : '完了へ'}
+          </span>
           <ChevronRight className="w-3.5 h-3.5" />
         </span>
         <button
           type="button"
+          aria-label={`${task.title} を編集`}
           onClick={onEdit}
-          className="opacity-0 group-hover:opacity-100 p-1 text-[#93a1a1] hover:text-[#268bd2] hover:bg-[#268bd2]/10 rounded transition"
+          className={`${actionRevealClass} p-1 text-[#93a1a1] hover:text-[#268bd2] hover:bg-[#268bd2]/10 rounded transition`}
           title="編集"
         >
           <Pencil className="w-3.5 h-3.5" />
         </button>
         <button
           type="button"
+          aria-label={`${task.title} を削除`}
           onClick={onDelete}
-          className="opacity-0 group-hover:opacity-100 p-1 text-[#93a1a1] hover:text-[#dc322f] hover:bg-[#dc322f]/10 rounded transition"
+          className={`${actionRevealClass} p-1 text-[#93a1a1] hover:text-[#dc322f] hover:bg-[#dc322f]/10 rounded transition`}
           title="削除"
         >
           <Trash2 className="w-3.5 h-3.5" />
@@ -1448,6 +1793,8 @@ function DoneTaskCard({
   task,
   currentDayOfMonth: _currentDayOfMonth,
   logicalDateStr,
+  isSelected,
+  cardRef,
   onToggle,
   onEdit,
   onDelete,
@@ -1456,23 +1803,36 @@ function DoneTaskCard({
   task: RoutineTask;
   currentDayOfMonth: number;
   logicalDateStr: string;
+  isSelected: boolean;
+  cardRef: (el: HTMLDivElement | null) => void;
   onToggle: () => void;
   onEdit: (e: React.MouseEvent) => void;
   onDelete: (e: React.MouseEvent) => void;
   onDragStart: () => void;
 }) {
   const deadlineStatus = getDeadlineStatus(task.deadline, logicalDateStr);
+  const actionRevealClass = `opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ${
+    isSelected ? 'opacity-100' : ''
+  }`;
 
   return (
     <div
+      ref={cardRef}
+      data-task-id={task.id}
+      data-selected={isSelected ? 'true' : undefined}
       draggable
       onDragStart={onDragStart}
       onClick={onToggle}
-      className="group flex items-center justify-between p-3 bg-[#f5eece]/70 hover:bg-[#eee8d5] border border-[#e6deca] hover:border-[#d3c8ab] rounded-xl cursor-pointer active:scale-[0.99] transition duration-150 shadow-2xs"
+      className={`group flex items-center justify-between p-3 border rounded-xl cursor-pointer active:scale-[0.99] transition duration-150 shadow-2xs ${
+        isSelected
+          ? 'bg-[#eee8d5] border-[#268bd2] outline-2 outline-offset-2 outline-[#268bd2]'
+          : 'bg-[#f5eece]/70 hover:bg-[#eee8d5] border-[#e6deca] hover:border-[#d3c8ab]'
+      }`}
     >
       <div className="flex items-center gap-3">
         <button
           type="button"
+          aria-label={`${task.title} を未完了に戻す`}
           onClick={(e) => {
             e.stopPropagation();
             onToggle();
@@ -1489,6 +1849,7 @@ function DoneTaskCard({
             {task.url && (
               <button
                 type="button"
+                aria-label={`${task.title} の巡回先URLを開く`}
                 onClick={(e) => {
                   e.stopPropagation();
                   openExternalUrl(task.url);
@@ -1555,21 +1916,23 @@ function DoneTaskCard({
       </div>
 
       <div className="flex items-center gap-1.5">
-        <span className="opacity-0 group-hover:opacity-100 text-xs text-[#657b83] font-medium transition">
-          元に戻す
+        <span className={`${actionRevealClass} text-xs text-[#657b83] font-medium transition`}>
+          {isSelected ? '元に戻す [Enter]' : '元に戻す'}
         </span>
         <button
           type="button"
+          aria-label={`${task.title} を編集`}
           onClick={onEdit}
-          className="opacity-0 group-hover:opacity-100 p-1 text-[#93a1a1] hover:text-[#268bd2] hover:bg-[#268bd2]/10 rounded transition"
+          className={`${actionRevealClass} p-1 text-[#93a1a1] hover:text-[#268bd2] hover:bg-[#268bd2]/10 rounded transition`}
           title="編集"
         >
           <Pencil className="w-3.5 h-3.5" />
         </button>
         <button
           type="button"
+          aria-label={`${task.title} を削除`}
           onClick={onDelete}
-          className="opacity-0 group-hover:opacity-100 p-1 text-[#93a1a1] hover:text-[#dc322f] hover:bg-[#dc322f]/10 rounded transition"
+          className={`${actionRevealClass} p-1 text-[#93a1a1] hover:text-[#dc322f] hover:bg-[#dc322f]/10 rounded transition`}
           title="削除"
         >
           <Trash2 className="w-3.5 h-3.5" />
